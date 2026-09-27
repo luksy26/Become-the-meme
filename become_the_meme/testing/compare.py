@@ -16,7 +16,7 @@ import argparse
 import cv2
 import numpy as np
 
-from ..app import MemeImageCache, _fit_to_height, _text, _wrap
+from ..app import FONT, MemeImageCache, _fit_to_height, _text, _wrap
 from ..segmentation import PersonSegmenter
 from ..webcam import CameraError, Webcam
 from . import capture
@@ -32,6 +32,10 @@ CAPTION_H = 24
 LABEL_W = 220
 WINDOW = "strategy compare"
 
+CAPTION_SCALE = 0.5
+MIN_CELL_W = 120      # narrow/portrait thumbs still get room for their caption
+MAX_CELL_W = 460      # cap runaway widening for very long names (name gets ellipsized)
+
 # A small, legible default subset showing the progression to the winner.
 DEFAULT_SUBSET = [
     "b32_raw_image",             # naive CLIP baseline (appearance / look-alike)
@@ -41,15 +45,56 @@ DEFAULT_SUBSET = [
 ]
 
 
-def _caption_strip(width: int, text: str, scale: float = 0.5) -> np.ndarray:
+def _text_w(s: str, scale: float = CAPTION_SCALE) -> int:
+    return cv2.getTextSize(s, FONT, scale, 1)[0][0]
+
+
+def _ellipsize(text: str, max_w: int, scale: float = CAPTION_SCALE) -> str:
+    """Trim text from the right (adding …) until it fits within max_w pixels."""
+    if _text_w(text, scale) <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _text_w(text[:mid] + "…", scale) <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo] + "…" if lo else "…"
+
+
+def _caption_strip(width: int, text: str, scale: float = CAPTION_SCALE) -> np.ndarray:
     strip = np.full((CAPTION_H, width, 3), 25, dtype=np.uint8)
     _text(strip, text, (6, 17), scale)
     return strip
 
 
-def _labeled_thumb(img: np.ndarray, caption: str, height: int = THUMB_H) -> np.ndarray:
+def _pad_center(img: np.ndarray, width: int) -> np.ndarray:
+    """Center img on a dark strip of the given width (no-op if already wide enough)."""
+    if img.shape[1] >= width:
+        return img
+    left = (width - img.shape[1]) // 2
+    right = width - img.shape[1] - left
+    return np.hstack([
+        np.full((img.shape[0], left, 3), 20, dtype=np.uint8),
+        img,
+        np.full((img.shape[0], right, 3), 20, dtype=np.uint8),
+    ])
+
+
+def _labeled_thumb(img: np.ndarray, name: str, score: float | None = None,
+                   height: int = THUMB_H) -> np.ndarray:
+    """A thumbnail with its caption below. The cell is widened so the caption fits
+    (narrow/portrait thumbs no longer crop the filename or score); for very long
+    names the name is ellipsized but the score is always kept."""
     thumb = _fit_to_height(img, height)
-    return np.vstack([thumb, _caption_strip(thumb.shape[1], caption)])
+    score_txt = "" if score is None else f"  {score:.2f}"
+    cell_w = int(min(max(thumb.shape[1], _text_w(f"{name}{score_txt}") + 12, MIN_CELL_W),
+                     MAX_CELL_W))
+    name_room = cell_w - 12 - _text_w(score_txt)  # keep the score, trim the name
+    caption = f"{_ellipsize(name, name_room)}{score_txt}"
+    thumb = _pad_center(thumb, cell_w)
+    return np.vstack([thumb, _caption_strip(cell_w, caption)])
 
 
 def _label_cell(text: str, height: int) -> np.ndarray:
@@ -76,7 +121,7 @@ def _compose(query: np.ndarray, rows: list[tuple[str, list]], cache: MemeImageCa
             img = cache.get(str(m.path))
             if img is None:
                 img = np.full((THUMB_H, THUMB_H, 3), 40, dtype=np.uint8)
-            thumbs.append(_labeled_thumb(img, f"{m.path.name}  {m.score:.2f}"))
+            thumbs.append(_labeled_thumb(img, m.path.name, m.score))
         row_h = THUMB_H + CAPTION_H
         row = np.hstack([_label_cell(name, row_h), *thumbs])
         panels.append(row)
