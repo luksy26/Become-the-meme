@@ -41,8 +41,6 @@ relaunch — they're picked up automatically.
 **Controls:** `q` / `Esc` quit · `f` toggle fullscreen · `d` toggle text
 captions · `s` save the current view. Start windowed with `--windowed`.
 
----
-
 ## How it works (short version)
 
 Each meme and each webcam frame is turned into an embedding with a local
@@ -75,6 +73,30 @@ de-hub scores) — it ignores which meme you tagged. The labels are used only by
 **evaluation scripts** (below) to measure accuracy and tune the vocabulary. So for
 the app alone you can even save poses without labeling them; add labels when you
 want to measure or tune.
+
+## Cleanup
+
+```bash
+python -m become_the_meme.cleanup [--weights] [--all] [--dry-run]
+```
+
+Removes generated caches (which rebuild automatically). By default it clears only
+the regenerable project caches under `cache/`, keeping your captured poses and
+downloaded models. Flags:
+
+- **`--weights`** — also prune downloaded model weights no backend uses (the
+  multi-GB weights live in the Hugging Face / Torch caches outside the project;
+  in-use ones are kept).
+- **`--all`** — full reset: all project caches (including captured poses and
+  MediaPipe models) **and** every downloaded weight (all re-download on next use).
+- **`--dry-run`** — preview what would be removed without deleting anything.
+
+---
+
+> **Everything below is optional.** The sections above are all you need to use the
+> app. What follows is for tinkering with match quality, benchmarking setups, trying
+> alternate backends, and understanding the internals — none of it is required for
+> normal use.
 
 ## Tweaking the concept vocabulary
 
@@ -155,23 +177,6 @@ python -m become_the_meme                       # concept     (default; matches 
 python -m become_the_meme --backend appearance  # appearance  (fast look-alike; raw image similarity)
 python -m become_the_meme --backend vlm         # vlm         (describes you in words; slower, ~1-4s)
 ```
-
-## Cleanup
-
-```bash
-python -m become_the_meme.cleanup [--weights] [--all] [--dry-run]
-```
-
-Removes generated caches (which rebuild automatically). By default it clears only
-the regenerable project caches under `cache/`, keeping your captured poses and
-downloaded models. Flags:
-
-- **`--weights`** — also prune downloaded model weights no backend uses (the
-  multi-GB weights live in the Hugging Face / Torch caches outside the project;
-  in-use ones are kept).
-- **`--all`** — full reset: all project caches (including captured poses and
-  MediaPipe models) **and** every downloaded weight (all re-download on next use).
-- **`--dry-run`** — preview what would be removed without deleting anything.
 
 ## Technologies
 
