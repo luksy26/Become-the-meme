@@ -44,23 +44,32 @@ Each meme and each webcam frame is turned into an embedding with a local
 vision-language model (SigLIP2), then projected onto a generic vocabulary of
 ~100 action / expression / pose concepts (`concepts.txt`). Matching compares
 those concept "fingerprints", so it responds to *what you're doing* rather than
-your identity. Scores are calibrated against a set of your own poses, which stops
-any single "hub" meme from winning everything.
+your identity. Scores are calibrated against the images you capture (below), which
+stops any single "hub" meme from winning everything.
 
-## Getting the best results: calibrate with your own poses
+## Getting the best results: capture some of your own poses
 
-The matcher calibrates against poses you capture into `cache/testset/`. This is
-what makes matching feel accurate (and stops one meme from always winning). Grab
-a dozen once:
+The matcher calibrates its scores against a set of your own pose **images** in
+`cache/testset/` — this is what stops one "hub" meme from always winning and makes
+matching feel accurate. Capture a dozen once, entirely in the window:
 
 ```bash
-python -m become_the_meme.testing.capture --num 12
+python -m become_the_meme.testing.capture
 ```
 
-For each pose: press **Enter**, a countdown grabs the frame, and you keep or
-retake it. Then label each with the meme you were going for (a numbered menu in
-the terminal). Aim for 2–3 varied poses per meme you care about. Relaunch the app
-and it uses them automatically.
+- **Live view:** press **Space** (or click) to capture — a small 3-2-1 countdown
+  runs in the corner so you can strike the pose.
+- **Label view:** your shot appears next to a grid of meme thumbnails; click the
+  meme(s) it matches, then **SAVE & NEXT** (or **RETAKE**). **Q** to finish.
+- Aim for ~a dozen varied poses. Relaunch the app and it uses them automatically.
+
+Re-tag or delete existing shots with `--relabel`.
+
+**Images vs. labels:** the live app only uses the pose *images* (to calibrate and
+de-hub scores) — it ignores which meme you tagged. The labels are used only by the
+**testing harness** (below) to measure accuracy and tune the vocabulary. So for
+the app alone you can even save poses without labeling them; add labels when you
+want to measure or tune.
 
 ## Tweaking the concept vocabulary
 
