@@ -1,41 +1,17 @@
 # Become the Meme
 
-Point your webcam at yourself, and the tool finds the meme in your `memes/`
-folder that you most look/vibe like — in real time, fully local, no cloud, no
-training data, no manual annotation.
+Point your webcam at yourself and Become the Meme shows the meme from your
+`memes/` folder that best matches **what you're doing** — your pose, gesture, and
+expression, not just who you look like. It runs fully locally: no cloud, no
+training, no manual labels.
 
-## How it works (the short version)
-
-1. **Capture** a frame from the webcam (OpenCV, cross-platform).
-2. **Isolate the person** by removing the background (MediaPipe segmentation).
-3. **Embed** the processed frame into a vector using a pretrained CLIP model.
-4. **Match** that vector against precomputed embeddings of every image in
-   `memes/` (cosine similarity, nearest neighbor).
-5. **Show** you next to the winning meme.
-
-No labels or training required — matching is zero-shot via CLIP embeddings.
-
-**A note on what it matches:** CLIP keys on overall appearance/expression/vibe,
-not precise body actions. It's great at "which meme do you look like"; matching a
-specific pose (e.g. hands raised) to a specific action meme is not reliable and
-was deliberately deferred (off-the-shelf pose estimation proved too flaky on a
-mixed, low-res meme corpus).
-
-## Project layout
-
-```
-become_the_meme/     # the Python package (all app code lives here)
-  __init__.py
-  __main__.py        # `python -m become_the_meme` — env smoke test for now
-  config.py          # paths + device (MPS/CUDA/CPU) selection
-memes/               # drop your meme images here (jpg/png/…)
-cache/               # generated embedding index (git-ignored)
-requirements.txt
-```
+Drop some images in `memes/`, run it, and strike a pose — you appear on the left,
+your best-match meme on the right, updating live.
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+ (developed on Apple Silicon / macOS; the webcam layer is
+cross-platform).
 
 ```bash
 python3 -m venv .venv
@@ -43,28 +19,93 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Run it
+Add your meme images (`.jpg` / `.png` / …) to the `memes/` folder.
+
+## Run
 
 ```bash
 source .venv/bin/activate
-python -m become_the_meme            # live: you on the left, best meme on the right
+python -m become_the_meme
 ```
 
-Controls: **q** quit · **s** save the side-by-side view · **r** cycle query
-representation (`bbox_crop` → `cutout` → `raw`) · **p** toggle the processed view.
+It opens fullscreen with your webcam on the left and the matched meme on the
+right. The first run downloads the vision model (~1.5 GB, one-time) and caches
+meme embeddings; later starts are fast. Drop new memes into `memes/` anytime and
+relaunch — they're picked up automatically.
 
-The meme index builds/updates automatically on start, so just drop new images
-into `memes/` and relaunch. To (re)build it manually:
+**Controls:** `q` / `Esc` quit · `f` toggle fullscreen · `d` toggle text
+captions · `s` save the current view. Start windowed with `--windowed`.
+
+---
+
+## How it works (short version)
+
+Each meme and each webcam frame is turned into an embedding with a local
+vision-language model (SigLIP2), then projected onto a generic vocabulary of
+~100 action / expression / pose concepts (`concepts.txt`). Matching compares
+those concept "fingerprints", so it responds to *what you're doing* rather than
+your identity. Scores are calibrated against a set of your own poses, which stops
+any single "hub" meme from winning everything.
+
+## Getting the best results: calibrate with your own poses
+
+The matcher calibrates against poses you capture into `cache/testset/`. This is
+what makes matching feel accurate (and stops one meme from always winning). Grab
+a dozen once:
 
 ```bash
-python -m become_the_meme.meme_index --build      # or --rebuild to force
+python -m become_the_meme.testing.capture --num 12
 ```
 
-## Verify the environment
+For each pose: press **Enter**, a countdown grabs the frame, and you keep or
+retake it. Then label each with the meme you were going for (a numbered menu in
+the terminal). Aim for 2–3 varied poses per meme you care about. Relaunch the app
+and it uses them automatically.
+
+## Tweaking the concept vocabulary
+
+The vocabulary in [`become_the_meme/testing/concepts.txt`](become_the_meme/testing/concepts.txt)
+drives matching. To tune it:
+
+```bash
+# See which concepts each pose and its target meme fire (find mismatches):
+python -m become_the_meme.testing.probe --testset
+
+# edit concepts.txt (add / rephrase / remove lines), then measure:
+python -m become_the_meme.testing.evaluate --strategies siglip2_bbox_concept_qz
+```
+
+Edits take effect automatically (the concept cache is keyed by the file's
+contents). A concept only helps a match when it appears in *both* the pose's and
+the meme's top concepts.
+
+## Testing & comparing approaches
+
+The `testing/` harness lets you measure and compare matching strategies on your
+labeled poses:
+
+```bash
+python -m become_the_meme.testing.evaluate        # rank all strategies by top-1 / top-3 / MRR
+python -m become_the_meme.testing.compare         # snapshot -> several strategies side by side
+```
+
+Running the full `evaluate` downloads two extra models the first time
+(ViT-L-14 and the baseline CLIP) to compare against; the default backend only
+needs SigLIP2.
+
+## Other backends
+
+```bash
+python -m become_the_meme                 # concept  (default; matches actions/expressions)
+python -m become_the_meme --backend clip  # CLIP     (fast, appearance/look-alike only)
+python -m become_the_meme --backend vlm   # VLM      (describes you in words; slower, ~1-4s)
+```
+
+## Environment check
 
 ```bash
 python -m become_the_meme --check
 ```
 
-This prints the detected compute device and confirms every dependency imports
-correctly.
+Confirms every dependency imports and prints the detected compute device
+(MPS / CUDA / CPU).
