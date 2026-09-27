@@ -116,16 +116,19 @@ class VLMMatcher:
 class ConceptMatcher:
     """Fast CLIP-concept matcher — the winning strategy from the harness.
 
-    SigLIP2 + upper-body crop + concept projection + z-score. Matches on *what
-    you're doing* (via a generic action/expression concept vocabulary) rather
-    than who you look like, at ~130ms/frame. The on-screen captions show the top
-    concepts fired by you and by the matched meme.
+    SigLIP2 + bbox crop + concept projection + query-calibrated z-score. Matches
+    on *what you're doing* (via a generic action/expression concept vocabulary)
+    rather than who you look like, at ~130ms/frame. The z-score is calibrated
+    against your captured poses (cache/testset), which removes "hub" memes that
+    otherwise win everything. The on-screen captions show the top concepts fired
+    by you and by the matched meme.
     """
 
-    def __init__(self, strategy_name: str = "siglip2_upper_concept_z",
+    def __init__(self, strategy_name: str = "siglip2_bbox_concept_qz",
                  segmenter: PersonSegmenter | None = None) -> None:
         import numpy as np
 
+        from .testing.capture import TESTSET_DIR
         from .testing.strategies import (
             TEMPLATES,
             embed_with_rep,
@@ -142,6 +145,26 @@ class ConceptMatcher:
         self.backend = self.strategy._backend
         self.concepts = load_concepts()
         self._T = self.backend.concept_matrix(self.concepts, TEMPLATES)
+
+        # Calibrate the query-prior norm from captured poses (removes hub memes).
+        if self.strategy.normalization in ("query_center", "query_zscore"):
+            import cv2
+
+            pose_files = sorted(TESTSET_DIR.glob("img_*.png"))
+            if pose_files:
+                cal = np.stack([
+                    embed_with_rep(self.backend.embedder, cv2.imread(str(p)),
+                                   self.strategy.representation, self.segmenter)
+                    for p in pose_files
+                ])
+                self.strategy.calibrate(cal)
+                print(f"calibrated matching from {len(pose_files)} captured poses.")
+            else:
+                # No calibration poses yet -> query norm degrades to raw; fall back
+                # to a self-contained z-score strategy so matching still de-hubs.
+                print("no calibration poses (cache/testset) — using meme z-score fallback.")
+                self.strategy = strategies_by_name(["siglip2_upper_concept_z"])[0]
+                prepare_strategies([self.strategy], self.segmenter)
 
         # Precompute each meme's top concepts for the on-screen caption.
         paths, meme_embs = self.backend.meme_base_embeddings("raw")

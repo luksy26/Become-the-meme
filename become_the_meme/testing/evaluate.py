@@ -29,16 +29,53 @@ def _rel(match_path) -> str:
     return str(match_path.relative_to(config.MEMES_DIR))
 
 
-def evaluate_strategy(strat: MatchStrategy, items, per_item: bool = False):
-    top1 = top3 = rr = 0.0
-    total_ms = 0.0
-    n = len(items)
+def _ranked_rels_per_item(strat: MatchStrategy, items) -> tuple[list[list[str]], float]:
+    """Per item, the full ranked list of meme relpaths, plus avg ms.
+
+    For query-calibrated norms, the per-meme prior is estimated leave-one-out from
+    the OTHER test poses so the metric stays honest (no leakage).
+    """
+    import numpy as np
+
+    from .strategies import embed_with_rep
+
+    if strat.normalization in ("query_center", "query_zscore"):
+        embs, total_ms = [], 0.0
+        for it in items:
+            frame = cv2.imread(str(TESTSET_DIR / it.image))
+            t0 = time.time()
+            embs.append(embed_with_rep(strat._backend.embedder, frame,
+                                       strat.representation, strat._segmenter))
+            total_ms += (time.time() - t0) * 1000
+        P = np.stack([strat.raw_meme_scores(e) for e in embs])  # (n, n_memes)
+        paths = strat._paths
+        ranked = []
+        for i in range(len(items)):
+            mask = np.ones(len(items), bool)
+            mask[i] = False
+            mu = P[mask].mean(0)
+            if strat.normalization == "query_zscore":
+                s = (P[i] - mu) / (P[mask].std(0) + 1e-6)
+            else:
+                s = P[i] - mu
+            ranked.append([paths[j] for j in np.argsort(-s)])
+        return ranked, total_ms / len(items)
+
+    ranked, total_ms = [], 0.0
     for it in items:
         frame = cv2.imread(str(TESTSET_DIR / it.image))
         t0 = time.time()
         ranking = strat.rank(frame)
         total_ms += (time.time() - t0) * 1000
-        rels = [_rel(m.path) for m in ranking]
+        ranked.append([_rel(m.path) for m in ranking])
+    return ranked, total_ms / len(items)
+
+
+def evaluate_strategy(strat: MatchStrategy, items, per_item: bool = False):
+    top1 = top3 = rr = 0.0
+    n = len(items)
+    ranked, avg_ms = _ranked_rels_per_item(strat, items)
+    for it, rels in zip(items, ranked):
         labels = set(it.labels)
         hit1 = rels[0] in labels
         hit3 = bool(labels & set(rels[:3]))
@@ -57,7 +94,7 @@ def evaluate_strategy(strat: MatchStrategy, items, per_item: bool = False):
         "top1": top1 / n,
         "top3": top3 / n,
         "mrr": rr / n,
-        "ms": total_ms / n,
+        "ms": avg_ms,
     }
 
 

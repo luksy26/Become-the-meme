@@ -1,7 +1,7 @@
-# Generic action / expression / pose vocabulary for concept-projection matching.
+# Generic action / expression / pose / object vocabulary for concept-projection matching.
 # One concept per line; blank lines and '#' comments are ignored.
 # Written to read naturally after a template, e.g. "a photo of {concept}".
-# This is a GENERIC vocabulary, not per-meme annotation. Edit freely and re-run.
+# GENERIC vocabulary (not per-meme labels). Edit freely and re-run evaluate.
 
 # --- facial expression ---
 a person smiling
@@ -9,29 +9,42 @@ a person grinning widely
 a person laughing hard
 a person crying
 a person crying with laughter
-a person with a surprised face
-a person with a shocked face
+a person with a shocked face and wide open eyes
+a person with a surprised gasping face
+a person with huge bulging eyes
 a person with an angry face
-a person frowning
+a person with a stern angry glare
+a person with an intense serious stare
 a person with a smug smirking face
+a person with a proud satisfied face
 a person with a confident face
-a person with a neutral expression
-a person screaming
-a person winking
+a person with an unimpressed half-lidded face
 a person with a disgusted face
-a person with a stern serious face
-a person looking bored
-a person looking excited
+a person with a scared frightened face
+a person with a sad face
+a person with a confused puzzled face
+a person screaming
+a person yawning
+a person sticking out their tongue
+a person with puffed cheeks
+a person making a silly derpy face
+a person blowing a kiss
+a person winking
+a person raising one eyebrow
 
 # --- head and gaze ---
 a person looking to the side
 a person looking up
+a person looking down
 a person with their head tilted
 a person staring straight at the camera
+a person resting their head on their hand
 
 # --- hand and arm gestures ---
 a person pointing at the camera
+a person pointing upward
 a person giving a thumbs up
+a person giving a thumbs down
 a person raising both arms in the air
 a person with arms crossed
 a person with a hand on the chin thinking
@@ -44,26 +57,68 @@ a person with hands on hips
 a person shrugging
 a person clapping
 a person with praying hands
-a person with a finger over their lips
+a person with a finger over their lips shushing
+a person covering their face with their hands
+a person with hands on their cheeks in shock
+a person saluting
+a person reaching out a hand
 
-# --- body pose ---
+# --- body poses ---
 a person standing confidently
 a person leaning forward
-a person with arms spread wide
+a person leaning back
+a person lying on their back
 a person crouching
-a person running
+a person kneeling
+a person bowing
 a person sitting down
-a muscular bodybuilder pose
+a person jumping
+a person dancing
+a person running
+a muscular bodybuilder flexing pose
 a person dabbing
-a person lying down
+a person in a fighting stance
 
-# --- affect / vibe ---
-a cool confident alpha pose
-a person looking relaxed and calm
+# --- objects a person can hold ---
+a person holding a trophy
+a person holding a golden award
+a person holding a phone
+a person holding a cup or drink
+a person holding a cigarette
+a person holding a microphone
+a person holding a game controller
+a person holding a book
+a person holding a sign
+a person holding money
+a person holding a ball
+a person holding a camera
+a person holding food
+a person holding a baby
+a person holding a cat
+a person holding a pet animal
 
-# --- non-person catch-alls ---
+# --- attire / appearance bridges ---
+a person wearing sunglasses
+a person wearing glasses
+a person wearing headphones
+a person wearing a suit and bow tie
+a person in a formal tuxedo
+a shirtless muscular man
+a bald man with a beard
+
+# --- animals / characters / medium (for non-person memes) ---
+a cat
+a black cat with wide eyes
 a dog
+a wolf
+a goat
 an animal
 a cartoon character
+a fluffy blue cartoon monster
 a soccer player celebrating a goal
-a person holding a trophy
+an athlete at an award ceremony
+
+# --- vibe ---
+a cool alpha confident pose
+a person looking excited and hyped
+a person looking calm and relaxed

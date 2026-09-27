@@ -37,7 +37,9 @@ CONCEPT_CACHE_DIR = config.CACHE_DIR / "concept_cache"
 
 REPRESENTATIONS = ("raw", "cutout", "bbox_crop", "upper_body_crop", "multi_crop")
 METHODS = ("image", "concept")
-NORMALIZATIONS = ("none", "hubness", "meancenter", "zscore")
+# query_* norms calibrate each meme against a set of real poses (a query prior),
+# which removes hub memes far better than meme-vs-meme calibration.
+NORMALIZATIONS = ("none", "hubness", "meancenter", "zscore", "query_center", "query_zscore")
 
 
 # --- small numeric helpers ---------------------------------------------------
@@ -216,6 +218,8 @@ class MatchStrategy:
     _mu_j: np.ndarray | None = field(default=None, repr=False)
     _sigma_j: np.ndarray | None = field(default=None, repr=False)
     _muv: np.ndarray | None = field(default=None, repr=False)
+    _qmu: np.ndarray | None = field(default=None, repr=False)   # per-meme mean over calibration poses
+    _qsigma: np.ndarray | None = field(default=None, repr=False)  # per-meme std over calibration poses
 
     def prepare(self, backend: ModelBackend, segmenter: PersonSegmenter | None,
                 concepts: list[str], templates: list[str]) -> "MatchStrategy":
@@ -255,14 +259,28 @@ class MatchStrategy:
             v = _l2(v - self._muv)
         return v
 
+    def raw_meme_scores(self, q_img: np.ndarray) -> np.ndarray:
+        """Pre-normalization similarity of a query embedding to every meme (n_memes,)."""
+        return self._V @ self._query_vector_from_emb(q_img)
+
+    def calibrate(self, query_img_embeddings: np.ndarray) -> "MatchStrategy":
+        """Set the query prior for query_* norms from calibration pose embeddings (M, D)."""
+        P = np.stack([self.raw_meme_scores(e) for e in query_img_embeddings])  # (M, n_memes)
+        self._qmu = P.mean(axis=0).astype(np.float32)
+        self._qsigma = P.std(axis=0).astype(np.float32)
+        return self
+
     def rank_from_emb(self, q_img: np.ndarray, top_k: int | None = None) -> list[Match]:
         """Rank memes from an already-computed query image embedding (D,)."""
-        v = self._query_vector_from_emb(q_img)
-        s = self._V @ v
+        s = self._V @ self._query_vector_from_emb(q_img)
         if self.normalization == "hubness":
             s = s - self.beta * self._h
         elif self.normalization == "zscore":
             s = (s - self._mu_j) / (self._sigma_j + 1e-6)
+        elif self.normalization == "query_center" and self._qmu is not None:
+            s = s - self._qmu
+        elif self.normalization == "query_zscore" and self._qmu is not None:
+            s = (s - self._qmu) / (self._qsigma + 1e-6)
         order = np.argsort(-s)
         if top_k is not None:
             order = order[:top_k]
@@ -289,8 +307,10 @@ def default_strategies() -> list[MatchStrategy]:
         S("l14_upper_concept_z", "l14_dfn", "upper_body_crop", "concept", "zscore"),
         S("siglip2_bbox_concept_hub", "siglip2_b", "bbox_crop", "concept", "hubness"),
         S("l14_bbox_concept_hub", "l14_dfn", "bbox_crop", "concept", "hubness"),
-        # current best (found via the sweep): the one to tune against.
         S("siglip2_upper_concept_z", "siglip2_b", "upper_body_crop", "concept", "zscore"),
+        # current best (query-calibrated): the one to tune against. Needs a
+        # calibration pose set (evaluate does leave-one-out; the app uses cache/testset).
+        S("siglip2_bbox_concept_qz", "siglip2_b", "bbox_crop", "concept", "query_zscore"),
     ]
 
 
