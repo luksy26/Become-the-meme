@@ -33,7 +33,7 @@ from ..webcam import CameraError, Frame, Webcam
 
 TESTSET_DIR = config.CACHE_DIR / "testset"
 LABELS_PATH = TESTSET_DIR / "labels.json"
-WINDOW = "Become the Meme — capture"
+WINDOW = "Become the Meme - capture"
 
 BAR_H = 52          # bottom action/instruction bar
 CAP_H = 22          # thumbnail caption strip
@@ -92,6 +92,67 @@ def scan_memes() -> list[str]:
 def _blit(canvas: Frame, img: Frame, x: int, y: int) -> None:
     h, w = img.shape[:2]
     canvas[y:y + h, x:x + w] = img
+
+
+def countdown_and_grab(cam: Webcam, seconds: int = COUNTDOWN_SECONDS,
+                       window: str = WINDOW) -> Frame:
+    """Show the live feed with a small corner countdown, then grab and return a frame.
+
+    A blocking one-shot capture (used by the compare tool). The interleaved capture
+    UI does its own non-blocking countdown inside CaptureUI.
+    """
+    start = time.time()
+    while True:
+        frame = cam.read()
+        remaining = seconds - (time.time() - start)
+        disp = frame.copy()
+        if remaining > 0:
+            n = int(remaining) + 1
+            h, w = disp.shape[:2]
+            cx, cy = w - 60, 60
+            cv2.circle(disp, (cx, cy), 40, (0, 0, 0), -1)
+            (tw, th), _ = cv2.getTextSize(str(n), cv2.FONT_HERSHEY_SIMPLEX, 1.6, 3)
+            cv2.putText(disp, str(n), (cx - tw // 2, cy + th // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.6, (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.imshow(window, disp)
+        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            raise KeyboardInterrupt
+        cv2.waitKey(1)
+        if remaining <= 0:
+            return frame
+
+
+def snap_in_window(cam: Webcam, window: str = WINDOW,
+                   prompt: str = "Space / click = capture     Q = cancel") -> Frame | None:
+    """In-window one-shot capture: live feed, Space/click to trigger a corner
+    countdown, then grab. Returns the frame, or None if cancelled (Q/Esc/close)."""
+    clicked = {"v": False}
+
+    def _on_mouse(event, *_):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            clicked["v"] = True
+
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window, _on_mouse)
+    raised = False
+    while True:
+        frame = cam.read()
+        disp = frame.copy()
+        h, w = disp.shape[:2]
+        cv2.rectangle(disp, (0, h - 40), (w, h), (0, 0, 0), -1)
+        cv2.putText(disp, prompt, (12, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.imshow(window, disp)
+        if not raised:
+            cv2.setWindowProperty(window, cv2.WND_PROP_TOPMOST, 1)
+            raised = True
+        if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+            return None
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):
+            return None
+        if key == ord(" ") or clicked["v"]:
+            return countdown_and_grab(cam, window=window)
 
 
 class CaptureUI:

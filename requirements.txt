@@ -20,3 +20,10 @@ mediapipe
 # torch provides Apple Silicon (MPS) / CUDA / CPU backends automatically.
 torch
 open_clip_torch
+
+# --- Text encoders ---
+# transformers is REQUIRED by the default (concept) backend: SigLIP2's tokenizer
+# loads through Hugging Face transformers. It also powers the vlm backend (Qwen2-VL).
+# sentence-transformers is used by the vlm backend for text matching.
+transformers
+sentence-transformers

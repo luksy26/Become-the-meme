@@ -176,7 +176,7 @@ def _draw_overlay(frame: Frame, fps: float) -> None:
 def run_preview(camera_index: int = 0, mirror: bool = True,
                 width: int | None = 1280, height: int | None = 720) -> int:
     """Open a live preview window until the user quits. Returns an exit code."""
-    window = "Become the Meme — webcam"
+    window = "Become the Meme - webcam"
     last = time.time()
     fps = 0.0
 

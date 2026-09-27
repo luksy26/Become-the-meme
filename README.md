@@ -113,6 +113,41 @@ python -m become_the_meme.testing.compare         # snapshot -> several setups s
 Running the full `evaluate` downloads two extra models the first time
 (ViT-L-14 and ViT-B-32) to compare against; the app's default only needs SigLIP2.
 
+### Choosing which setups to compare
+
+Both tools take `--strategies` to pick specific setups by name:
+
+```bash
+python -m become_the_meme.testing.compare  --strategies b32_raw_image,siglip2_bbox_concept_qz
+python -m become_the_meme.testing.evaluate --strategies siglip2_bbox_concept_qz
+```
+
+`evaluate` with no `--strategies` lists every available setup. Each name reads as
+`model_representation_method_norm`:
+
+- **model** — which vision model:
+  - `b32` — CLIP ViT-B-32
+  - `l14` — CLIP ViT-L-14 (DFN)
+  - `siglip2` — SigLIP2
+- **representation** — which part of you gets embedded:
+  - `raw` — the whole frame
+  - `bbox` — cropped to you (background trimmed)
+  - `upper` — head + torso
+  - `cutout` — background removed onto grey
+  - `multi` — average of several crops
+- **method** — how images are compared:
+  - `image` — raw image-to-image similarity → matches *appearance*
+  - `concept` — projected onto action/expression concepts → matches *what you're doing*
+- **norm** — score normalization to stop one "hub" meme winning everything:
+  - `hub` — hubness
+  - `z` — z-score
+  - `mc` — mean-center
+  - `qz` — query-calibrated z-score (calibrated against your poses — **the winner**)
+  - *(absent)* — raw scores
+
+So `siglip2_bbox_concept_qz` = SigLIP2 · cropped-to-you · concept-projection ·
+query-calibrated — the setup the app uses by default.
+
 ## Other backends
 
 ```bash
@@ -120,6 +155,23 @@ python -m become_the_meme                       # concept     (default; matches 
 python -m become_the_meme --backend appearance  # appearance  (fast look-alike; raw image similarity)
 python -m become_the_meme --backend vlm         # vlm         (describes you in words; slower, ~1-4s)
 ```
+
+## Cleanup
+
+```bash
+python -m become_the_meme.cleanup [--weights] [--all] [--dry-run]
+```
+
+Removes generated caches (which rebuild automatically). By default it clears only
+the regenerable project caches under `cache/`, keeping your captured poses and
+downloaded models. Flags:
+
+- **`--weights`** — also prune downloaded model weights no backend uses (the
+  multi-GB weights live in the Hugging Face / Torch caches outside the project;
+  in-use ones are kept).
+- **`--all`** — full reset: all project caches (including captured poses and
+  MediaPipe models) **and** every downloaded weight (all re-download on next use).
+- **`--dry-run`** — preview what would be removed without deleting anything.
 
 ## Technologies
 

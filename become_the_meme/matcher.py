@@ -162,9 +162,10 @@ class ConceptMatcher:
             else:
                 # No calibration poses yet -> query norm degrades to raw; fall back
                 # to a self-contained z-score strategy so matching still de-hubs.
+                # Reuse the already-loaded backend (don't reload the model).
                 print("no calibration poses (cache/testset) — using meme z-score fallback.")
                 self.strategy = strategies_by_name(["siglip2_upper_concept_z"])[0]
-                prepare_strategies([self.strategy], self.segmenter)
+                self.strategy.prepare(self.backend, self.segmenter, self.concepts, TEMPLATES)
 
         # Precompute each meme's top concepts for the on-screen caption.
         paths, meme_embs = self.backend.meme_base_embeddings("raw")

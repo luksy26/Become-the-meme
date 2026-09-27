@@ -1,9 +1,10 @@
 """Eyeball several matching strategies on one query, side by side.
 
-    python -m become_the_meme.testing.compare                 # webcam snapshot
+    python -m become_the_meme.testing.compare                 # in-window webcam snapshot
     python -m become_the_meme.testing.compare --image cache/testset/img_003.png
     python -m become_the_meme.testing.compare --strategies b32_raw_image,l14_upper_concept_z --save
 
+Capture is in-window (Space / click to snap with a corner countdown, Q to cancel).
 Composes a canvas (query on top, one row per strategy with its top-3 memes) and
 also prints the rankings to the terminal (robust fallback if the GUI misbehaves).
 """
@@ -19,20 +20,24 @@ from ..app import MemeImageCache, _fit_to_height, _text, _wrap
 from ..segmentation import PersonSegmenter
 from ..webcam import CameraError, Webcam
 from . import capture
-from .strategies import default_strategies, prepare_strategies, strategies_by_name
+from .strategies import (
+    default_strategies,
+    embed_with_rep,
+    prepare_strategies,
+    strategies_by_name,
+)
 
 THUMB_H = 150
 CAPTION_H = 24
 LABEL_W = 220
 WINDOW = "strategy compare"
 
-# A small, legible default subset (one per interesting idea).
+# A small, legible default subset showing the progression to the winner.
 DEFAULT_SUBSET = [
-    "b32_raw_image",
-    "b32_bbox_image_hub",
-    "b32_bbox_concept_z",
-    "l14_upper_concept_z",
-    "siglip2_bbox_concept_hub",
+    "b32_raw_image",             # naive CLIP baseline (appearance / look-alike)
+    "b32_bbox_concept_z",        # concept projection on the small model
+    "siglip2_bbox_concept_hub",  # SigLIP2 concept, self-contained normalization
+    "siglip2_bbox_concept_qz",   # the winner (query-calibrated)
 ]
 
 
@@ -85,19 +90,40 @@ def _get_query(args) -> np.ndarray | None:
         if frame is None:
             print(f"Could not read image: {args.image}")
         return frame
-    cv2.namedWindow(capture.WINDOW, cv2.WINDOW_NORMAL)
     try:
         with Webcam(args.camera) as cam:
-            cv2.setWindowProperty(capture.WINDOW, cv2.WND_PROP_TOPMOST, 1)
-            input("Strike a pose, then press Enter to capture (Ctrl-C to cancel)... ")
-            frame = capture._countdown_and_grab(cam)
+            frame = capture.snap_in_window(cam)   # in-window: Space/click to capture, Q to cancel
     except (KeyboardInterrupt, CameraError) as exc:
-        print(f"\ncancelled ({exc})" if isinstance(exc, CameraError) else "\ncancelled")
+        print(f"[camera error] {exc}" if isinstance(exc, CameraError) else "\ncancelled")
         return None
     finally:
         cv2.destroyAllWindows()
         cv2.waitKey(1)
+    if frame is None:
+        print("cancelled.")
     return frame
+
+
+def _calibrate_query_strategies(strategies, segmenter) -> None:
+    """Calibrate query_* setups from captured poses (cache/testset), like the live app.
+
+    Without this, query-calibrated setups fall back to raw scores that don't reflect
+    real performance.
+    """
+    query_strats = [s for s in strategies
+                    if s.normalization in ("query_center", "query_zscore")]
+    if not query_strats:
+        return
+    pose_files = sorted(capture.TESTSET_DIR.glob("img_*.png"))
+    if not pose_files:
+        print("  (no cache/testset poses — query-calibrated setups show raw scores)")
+        return
+    frames = [cv2.imread(str(p)) for p in pose_files]
+    for st in query_strats:
+        cal = np.stack([embed_with_rep(st._backend.embedder, f, st.representation, segmenter)
+                        for f in frames])
+        st.calibrate(cal)
+    print(f"  calibrated {len(query_strats)} setup(s) from {len(pose_files)} poses.")
 
 
 def _show(canvas: np.ndarray) -> None:
@@ -131,6 +157,7 @@ def main() -> int:
                    for s in strategies)
     segmenter = PersonSegmenter() if need_seg else None
     prepare_strategies(strategies, segmenter)
+    _calibrate_query_strategies(strategies, segmenter)
 
     query = _get_query(args)
     if query is None:
