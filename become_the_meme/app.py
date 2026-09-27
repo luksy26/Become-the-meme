@@ -1,9 +1,9 @@
 """Live 'Become the Meme' app: webcam on the left, best-matching meme on the right.
 
-    python -m become_the_meme                    # concept backend (fast, matches actions)
-    python -m become_the_meme --backend vlm      # slow VLM captions
-    python -m become_the_meme --backend clip     # fast CLIP (appearance only)
-    python -m become_the_meme --check            # environment smoke test
+    python -m become_the_meme                      # concept backend (fast, matches actions)
+    python -m become_the_meme --backend vlm        # slow word descriptions
+    python -m become_the_meme --backend appearance # fast look-alike (raw image similarity)
+    python -m become_the_meme --check              # environment smoke test
 
 Matching runs on a background thread so the webcam stays smooth. The default
 'concept' backend (SigLIP2 + concept projection) refreshes a few times a second;
@@ -12,7 +12,7 @@ the 'vlm' backend is slower (~1-4s/frame).
 Controls:
     q / Esc   quit                      s   save the side-by-side view
     f         toggle fullscreen         d   toggle text captions (off by default)
-    r         (CLIP) cycle representation      p   (CLIP) toggle processed view
+    r         (appearance) cycle representation   p   (appearance) toggle processed view
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ class _MatchWorker(threading.Thread):
 
 
 def _build_matcher(backend: str, representation: str):
-    if backend == "clip":
+    if backend == "appearance":
         from .matcher import MemeMatcher
 
         return MemeMatcher(representation=representation)
@@ -311,9 +311,9 @@ def run(
                 m_desc = shown["meme_desc"] if (shown and show_captions) else ""
 
                 info = f"{fps:4.1f}fps  {backend}"
-                if backend == "clip":
+                if backend == "appearance":
                     info += f"  rep={matcher.representation}"
-                left = matcher.preprocess(frame) if (show_processed and backend == "clip") else frame
+                left = matcher.preprocess(frame) if (show_processed and backend == "appearance") else frame
 
                 pw, ph, hh, hs = panel_dims()
                 canvas = _compose(left, meme_img, name, score, info, q_desc, m_desc,
@@ -338,12 +338,12 @@ def run(
                         window, cv2.WND_PROP_FULLSCREEN,
                         cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
                     screen_size = _screen_size() if fullscreen else None
-                if key == ord("r") and backend == "clip":
+                if key == ord("r") and backend == "appearance":
                     order = ["bbox_crop", "cutout", "raw"]
                     nxt = order[(order.index(matcher.representation) + 1) % len(order)]
                     matcher.set_representation(nxt)
                     print(f"representation -> {nxt}")
-                if key == ord("p") and backend == "clip":
+                if key == ord("p") and backend == "appearance":
                     show_processed = not show_processed
     except KeyboardInterrupt:
         print("\nInterrupted — quitting.")
@@ -359,12 +359,13 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Become the Meme — live matcher.")
-    parser.add_argument("--backend", choices=["concept", "vlm", "clip"], default="concept",
+    parser.add_argument("--backend", choices=["concept", "vlm", "appearance"], default="concept",
                         help="concept = fast action/expression match (default); "
-                             "vlm = slow captions; clip = fast appearance-only")
+                             "vlm = slow word descriptions; "
+                             "appearance = fast look-alike (raw image similarity)")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--representation", choices=["bbox_crop", "cutout", "raw"],
-                        default="bbox_crop", help="(CLIP backend only)")
+                        default="bbox_crop", help="(appearance backend only)")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--captions", action="store_true",
                         help="show the text concept captions (off by default; toggle with 'd')")

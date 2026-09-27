@@ -10,8 +10,8 @@ your best-match meme on the right, updating live.
 
 ## Setup
 
-Requires Python 3.11+ (developed on Apple Silicon / macOS; the webcam layer is
-cross-platform).
+- Python 3.11+ (download for your platform at [python.org](https://www.python.org/)).
+  Developed on Apple Silicon / macOS; the webcam layer is cross-platform.
 
 ```bash
 python3 -m venv .venv
@@ -19,7 +19,12 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Add your meme images (`.jpg` / `.png` / …) to the `memes/` folder.
+Add your meme images (`.jpg` / `.png` / …) to the `memes/` folder, then verify the
+install (confirms dependencies import and prints the compute device — MPS / CUDA / CPU):
+
+```bash
+python -m become_the_meme --check
+```
 
 ## Run
 
@@ -67,7 +72,7 @@ Re-tag or delete existing shots with `--relabel`.
 
 **Images vs. labels:** the live app only uses the pose *images* (to calibrate and
 de-hub scores) — it ignores which meme you tagged. The labels are used only by the
-**testing harness** (below) to measure accuracy and tune the vocabulary. So for
+**evaluation scripts** (below) to measure accuracy and tune the vocabulary. So for
 the app alone you can even save poses without labeling them; add labels when you
 want to measure or tune.
 
@@ -88,33 +93,48 @@ Edits take effect automatically (the concept cache is keyed by the file's
 contents). A concept only helps a match when it appears in *both* the pose's and
 the meme's top concepts.
 
-## Testing & comparing approaches
+## Comparing matching setups
 
-The `testing/` harness lets you measure and compare matching strategies on your
-labeled poses:
+The scripts in `testing/` let you measure and compare different matching setups
+(model + settings) on your labeled poses — this is how the default was chosen:
 
 ```bash
-python -m become_the_meme.testing.evaluate        # rank all strategies by top-1 / top-3 / MRR
-python -m become_the_meme.testing.compare         # snapshot -> several strategies side by side
+python -m become_the_meme.testing.evaluate        # score each setup by top-1 / top-3 / MRR
+python -m become_the_meme.testing.compare         # snapshot -> several setups side by side
 ```
 
+`evaluate` scores each setup on your labeled poses (0→1, higher is better):
+- **top-1** — how often the single best match is correct.
+- **top-3** — how often a correct match lands in the top 3.
+- **MRR** (mean reciprocal rank) — `1 ÷ rank of the first correct match`, averaged
+  (1.0 = always #1, 0.50 ≈ usually #2); rewards ranking the right meme higher even
+  when it isn't #1.
+
 Running the full `evaluate` downloads two extra models the first time
-(ViT-L-14 and the baseline CLIP) to compare against; the default backend only
-needs SigLIP2.
+(ViT-L-14 and ViT-B-32) to compare against; the app's default only needs SigLIP2.
 
 ## Other backends
 
 ```bash
-python -m become_the_meme                 # concept  (default; matches actions/expressions)
-python -m become_the_meme --backend clip  # CLIP     (fast, appearance/look-alike only)
-python -m become_the_meme --backend vlm   # VLM      (describes you in words; slower, ~1-4s)
+python -m become_the_meme                       # concept     (default; matches actions/expressions)
+python -m become_the_meme --backend appearance  # appearance  (fast look-alike; raw image similarity)
+python -m become_the_meme --backend vlm         # vlm         (describes you in words; slower, ~1-4s)
 ```
 
-## Environment check
+## Technologies
 
-```bash
-python -m become_the_meme --check
-```
+Everything runs locally in [Python](https://www.python.org/) 3.11+ on **PyTorch**
+(Apple Silicon MPS / CUDA / CPU).
 
-Confirms every dependency imports and prints the detected compute device
-(MPS / CUDA / CPU).
+**Models**
+- **SigLIP2** (`ViT-B-16-SigLIP2`, via open_clip) — the default concept-projection matcher.
+- **MediaPipe ImageSegmenter** (selfie multiclass) — isolates the person from the background.
+- **CLIP ViT-B-32** (via open_clip) — the appearance matcher (`--backend appearance`), and the reference the comparison scripts measure against.
+- **CLIP ViT-L-14** — a larger CLIP tried when comparing setups; it didn't beat SigLIP2 on this task, so the app never uses it.
+- **Qwen2-VL** (via Transformers) — the optional caption (`vlm`) backend.
+
+**Libraries**
+- **open_clip** / **Transformers** / **sentence-transformers** — image & text embeddings.
+- **OpenCV** — webcam capture and the fullscreen / capture windows.
+- **MediaPipe** — segmentation.
+- **NumPy** & **Pillow** — array and image handling.
