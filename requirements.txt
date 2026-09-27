@@ -1,0 +1,19 @@
+# Become the Meme — dependencies
+# Python 3.11, tested on macOS arm64 (Apple Silicon).
+# Versions are left unpinned so pip can resolve a mutually compatible set;
+# we can pin exact versions later once the pipeline is stable.
+
+# --- Core ---
+numpy
+Pillow
+
+# --- Webcam capture + image ops (platform-agnostic) ---
+opencv-python
+
+# --- Person segmentation & body-pose keypoints (local, no cloud) ---
+mediapipe
+
+# --- Zero-shot image embeddings via CLIP (local, no training data needed) ---
+# torch provides Apple Silicon (MPS) / CUDA / CPU backends automatically.
+torch
+open_clip_torch

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Caches / generated artifacts (embeddings index, etc.)
+cache/*
+!cache/.gitkeep
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
