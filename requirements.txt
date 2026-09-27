@@ -8,7 +8,10 @@ numpy
 Pillow
 
 # --- Webcam capture + image ops (platform-agnostic) ---
-opencv-python
+# Use ONLY opencv-contrib-python (mediapipe depends on it). Installing plain
+# opencv-python alongside it corrupts the shared cv2/ dir and breaks the GUI
+# (windows that display but ignore keyboard/close events).
+opencv-contrib-python
 
 # --- Person segmentation & body-pose keypoints (local, no cloud) ---
 mediapipe

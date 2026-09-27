@@ -161,11 +161,13 @@ def save_snapshot(frame: Frame, directory: Path = SNAPSHOTS_DIR) -> Path:
 def _draw_overlay(frame: Frame, fps: float) -> None:
     """Draw FPS and control hints onto the frame in place."""
     lines = [f"{fps:4.1f} FPS", "space/c: snapshot   q/Esc: quit"]
+    # Dark backing strip for readability (a thick text outline renders with
+    # artifacts on this OpenCV build, so we use a backing rectangle instead).
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (360, 12 + 30 * len(lines)), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
     y = 28
     for text in lines:
-        # Dark outline + light fill so it's readable on any background.
-        cv2.putText(frame, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                    (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(frame, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                     (255, 255, 255), 1, cv2.LINE_AA)
         y += 30

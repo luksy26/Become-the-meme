@@ -79,3 +79,34 @@ class MemeMatcher:
         processed = self.preprocess(frame)
         query = self.embedder.embed_image(processed)
         return self.index.match(query, top_k=top_k), processed
+
+
+class VLMMatcher:
+    """Matches frames by describing the action/expression (VLM) and comparing text.
+
+    Slower than :class:`MemeMatcher` (~1-4s/frame) but responds to what you're
+    *doing* rather than who you look like. Run it off the UI thread.
+    """
+
+    def __init__(self, describer=None, index=None, auto_build: bool = True) -> None:
+        from .semantic_index import SemanticIndex
+        from .vlm import VLMDescriber
+
+        self.describer = describer or VLMDescriber()
+        self.index = index or SemanticIndex(describer=self.describer)
+        if auto_build:
+            self.index.build()
+        else:
+            self.index.load()
+
+    @property
+    def num_memes(self) -> int:
+        return len(self.index.paths)
+
+    def match_frame(self, frame: Frame, top_k: int = 1) -> tuple[list[Match], str]:
+        """Return (matches, query_description) for a frame."""
+        description = self.describer.describe(frame)
+        return self.index.match_text(description, top_k=top_k), description
+
+    def description_of(self, path) -> str:
+        return self.index.description_of(path)

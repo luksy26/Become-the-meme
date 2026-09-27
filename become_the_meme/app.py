@@ -1,33 +1,32 @@
 """Live 'Become the Meme' app: webcam on the left, best-matching meme on the right.
 
-    python -m become_the_meme          # run it
-    python -m become_the_meme --check  # environment smoke test instead
+    python -m become_the_meme                    # VLM backend (matches actions)
+    python -m become_the_meme --backend clip     # fast CLIP backend (appearance)
+    python -m become_the_meme --check            # environment smoke test
+
+Matching runs on a background thread so the webcam stays smooth even though the
+VLM takes ~1-4s per frame. With the CLIP backend it updates many times a second.
 
 Controls:
-    q / Esc   quit
-    s         save the current side-by-side view to cache/snapshots/
-    r         cycle query representation (bbox_crop -> cutout -> raw)
-    p         toggle showing the processed query image on the left
+    q / Esc   quit           s   save the side-by-side view
+    r         (CLIP) cycle representation      p   (CLIP) toggle processed view
 """
 
 from __future__ import annotations
 
 import argparse
+import threading
 import time
-from collections import Counter, deque
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from . import config
-from .matcher import MemeMatcher
 from .webcam import CameraError, Frame, Webcam, save_snapshot
 
-PANEL_HEIGHT = 540           # height of each side panel
-HEADER_HEIGHT = 40           # info bar height
-MATCH_INTERVAL = 0.12        # seconds between matches (display stays smooth)
-SMOOTHING_WINDOW = 6         # frames of history for flicker suppression
+PANEL_HEIGHT = 540
+HEADER_HEIGHT = 40
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class MemeImageCache:
@@ -36,29 +35,59 @@ class MemeImageCache:
     def __init__(self) -> None:
         self._cache: dict[str, Frame | None] = {}
 
-    def get(self, path: Path) -> Frame | None:
-        key = str(path)
-        if key not in self._cache:
-            self._cache[key] = cv2.imread(key)  # None if unreadable
-        return self._cache[key]
+    def get(self, path: str) -> Frame | None:
+        if path not in self._cache:
+            self._cache[path] = cv2.imread(path)
+        return self._cache[path]
 
 
 def _fit_to_height(img: Frame, height: int) -> Frame:
-    """Resize keeping aspect ratio so the result is exactly `height` tall."""
     h, w = img.shape[:2]
     new_w = max(1, int(round(w * height / h)))
     return cv2.resize(img, (new_w, height), interpolation=cv2.INTER_AREA)
 
 
 def _text(img: Frame, s: str, org: tuple[int, int], scale: float = 0.6) -> None:
-    cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 1, cv2.LINE_AA)
+    # White text only. This OpenCV build renders a thick outline pass (thickness>1)
+    # with artifacts, so readability comes from the dark header/caption backing
+    # instead of a stroke outline.
+    cv2.putText(img, s, org, FONT, scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 
-def _placeholder(width: int, height: int, message: str) -> Frame:
-    panel = np.full((height, width, 3), 40, dtype=np.uint8)
-    _text(panel, message, (20, height // 2), scale=0.7)
-    return panel
+def _wrap(text: str, scale: float, max_width: int) -> list[str]:
+    """Greedy word-wrap so lines fit within max_width pixels."""
+    words = text.split()
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        (tw, _), _ = cv2.getTextSize(trial, FONT, scale, 1)
+        if tw <= max_width or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_caption(panel: Frame, text: str) -> None:
+    """Draw wrapped caption text over a translucent strip at the bottom of a panel."""
+    if not text:
+        return
+    scale = 0.55
+    lines = _wrap(text, scale, panel.shape[1] - 20)
+    line_h = 24
+    strip_h = line_h * len(lines) + 12
+    y0 = panel.shape[0] - strip_h
+    overlay = panel.copy()
+    cv2.rectangle(overlay, (0, y0), (panel.shape[1], panel.shape[0]), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.65, panel, 0.35, 0, panel)
+    y = y0 + 24
+    for ln in lines:
+        _text(panel, ln, (10, y), scale)
+        y += line_h
 
 
 def _compose(
@@ -67,13 +96,18 @@ def _compose(
     meme_name: str,
     score: float,
     info: str,
+    query_desc: str = "",
+    meme_desc: str = "",
 ) -> Frame:
-    """Build the side-by-side canvas with a header bar."""
     left_panel = _fit_to_height(left, PANEL_HEIGHT)
     if meme is not None:
         right_panel = _fit_to_height(meme, PANEL_HEIGHT)
     else:
-        right_panel = _placeholder(left_panel.shape[1], PANEL_HEIGHT, "no match")
+        right_panel = np.full((PANEL_HEIGHT, left_panel.shape[1], 3), 40, dtype=np.uint8)
+        _text(right_panel, "describing...", (20, PANEL_HEIGHT // 2), 0.7)
+
+    _draw_caption(left_panel, query_desc)
+    _draw_caption(right_panel, meme_desc)
 
     canvas = np.hstack([left_panel, right_panel])
     header = np.full((HEADER_HEIGHT, canvas.shape[1], 3), 25, dtype=np.uint8)
@@ -83,33 +117,94 @@ def _compose(
     return np.vstack([header, canvas])
 
 
+class _MatchWorker(threading.Thread):
+    """Runs matching off the UI thread; always works on the most recent frame."""
+
+    def __init__(self, matcher, backend: str, top_k: int) -> None:
+        super().__init__(daemon=True)
+        self.matcher = matcher
+        self.backend = backend
+        self.top_k = top_k
+        self._frame: Frame | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self.result: dict | None = None
+
+    def submit(self, frame: Frame) -> None:
+        with self._lock:
+            self._frame = frame
+
+    def _take(self) -> Frame | None:
+        with self._lock:
+            frame, self._frame = self._frame, None
+            return frame
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            frame = self._take()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            try:
+                matches, extra = self.matcher.match_frame(frame, top_k=self.top_k)
+            except Exception as exc:  # noqa: BLE001 - keep the app alive on a bad frame
+                print(f"[match error] {exc}")
+                continue
+            if matches:
+                best = matches[0]
+                is_vlm = self.backend == "vlm"
+                self.result = {
+                    "path": str(best.path),
+                    "score": best.score,
+                    "query_desc": extra if is_vlm else "",
+                    "meme_desc": self.matcher.description_of(best.path) if is_vlm else "",
+                }
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+def _build_matcher(backend: str, representation: str):
+    if backend == "clip":
+        from .matcher import MemeMatcher
+
+        return MemeMatcher(representation=representation)
+    from .matcher import VLMMatcher
+
+    return VLMMatcher()
+
+
 def run(
     camera_index: int = 0,
+    backend: str = "vlm",
     representation: str = "bbox_crop",
     top_k: int = 3,
 ) -> int:
-    print("Loading models and meme index (first run downloads weights)...")
-    matcher = MemeMatcher(representation=representation)
+    print(f"Loading {backend.upper()} backend and meme index "
+          "(first run downloads weights / describes memes)...")
+    matcher = _build_matcher(backend, representation)
     if matcher.num_memes == 0:
-        print("No memes found. Add images to memes/ and run again "
-              "(or: python -m become_the_meme.meme_index --build).")
+        print("No memes found. Add images to memes/ and run again.")
         return 1
-    print(f"Ready — {matcher.num_memes} memes indexed. Controls: q quit, "
-          f"s snapshot, r representation, p processed-view.")
+    print(f"Ready — {matcher.num_memes} memes. Click the window for focus. "
+          "Quit: q, Esc, Ctrl-C, or the close button.")
+
+    worker = _MatchWorker(matcher, backend, top_k)
+    worker.start()
 
     meme_cache = MemeImageCache()
-    recent = deque(maxlen=SMOOTHING_WINDOW)  # recent top-1 paths for smoothing
-    scores: dict[str, float] = {}            # latest score per meme path
-    last_match = 0.0
-    show_processed = False
     fps = 0.0
     prev = time.time()
+    show_processed = False
     window = "Become the Meme"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    raised = False
 
     try:
         with Webcam(camera_index) as cam:
             while True:
                 frame = cam.read()
+                worker.submit(frame)
 
                 now = time.time()
                 dt = now - prev
@@ -117,59 +212,61 @@ def run(
                 if dt > 0:
                     fps = 0.9 * fps + 0.1 * (1.0 / dt) if fps else 1.0 / dt
 
-                processed = frame
-                if now - last_match >= MATCH_INTERVAL:
-                    last_match = now
-                    matches, processed = matcher.match_frame(frame, top_k=top_k)
-                    if matches:
-                        recent.append(str(matches[0].path))
-                        for m in matches:
-                            scores[str(m.path)] = m.score
+                res = worker.result
+                meme_img = meme_cache.get(res["path"]) if res else None
+                name = Path(res["path"]).name if res else ""
+                score = res["score"] if res else 0.0
+                q_desc = res["query_desc"] if res else ""
+                m_desc = res["meme_desc"] if res else ""
 
-                # Smoothed choice: most common top-1 over the recent window.
-                best_path, best_score, best_name = None, 0.0, ""
-                if recent:
-                    best_path = Counter(recent).most_common(1)[0][0]
-                    best_score = scores.get(best_path, 0.0)
-                    best_name = Path(best_path).name
+                info = f"{fps:4.1f}fps  {backend}"
+                if backend == "clip":
+                    info += f"  rep={matcher.representation}"
+                left = matcher.preprocess(frame) if (show_processed and backend == "clip") else frame
 
-                left = processed if show_processed else frame
-                meme_img = meme_cache.get(Path(best_path)) if best_path else None
-                info = f"{fps:4.1f}fps  rep={matcher.representation}"
-                canvas = _compose(left, meme_img, best_name, best_score, info)
+                canvas = _compose(left, meme_img, name, score, info, q_desc, m_desc)
                 cv2.imshow(window, canvas)
+                if not raised:
+                    cv2.setWindowProperty(window, cv2.WND_PROP_TOPMOST, 1)
+                    raised = True
+                if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                    break
 
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
                 if key == ord("s"):
-                    path = save_snapshot(canvas)
-                    print(f"Saved -> {path}")
-                if key == ord("r"):
+                    print(f"Saved -> {save_snapshot(canvas)}")
+                if key == ord("r") and backend == "clip":
                     order = ["bbox_crop", "cutout", "raw"]
                     nxt = order[(order.index(matcher.representation) + 1) % len(order)]
                     matcher.set_representation(nxt)
-                    recent.clear()
                     print(f"representation -> {nxt}")
-                if key == ord("p"):
+                if key == ord("p") and backend == "clip":
                     show_processed = not show_processed
+    except KeyboardInterrupt:
+        print("\nInterrupted — quitting.")
     except CameraError as exc:
         print(f"[camera error] {exc}")
         return 1
     finally:
+        worker.stop()
         cv2.destroyAllWindows()
+        cv2.waitKey(1)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Become the Meme — live matcher.")
+    parser.add_argument("--backend", choices=["vlm", "clip"], default="vlm",
+                        help="vlm = matches actions/expressions; clip = fast appearance")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--representation", choices=["bbox_crop", "cutout", "raw"],
-                        default="bbox_crop")
+                        default="bbox_crop", help="(CLIP backend only)")
     parser.add_argument("--top-k", type=int, default=3)
     args = parser.parse_args(argv)
-    return run(camera_index=args.camera, representation=args.representation,
-               top_k=args.top_k)
+    return run(camera_index=args.camera, backend=args.backend,
+               representation=args.representation, top_k=args.top_k)
 
 
 if __name__ == "__main__":
