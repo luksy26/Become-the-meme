@@ -39,6 +39,11 @@ BAR_H = 52          # bottom action/instruction bar
 CAP_H = 22          # thumbnail caption strip
 GRID_COLS = 4
 COUNTDOWN_SECONDS = 3
+# macOS/OpenCV only dispatches GUI (mouse) events while waitKey() runs, so give
+# the event loop a real slice each frame. ~20ms is still ~50fps for the view.
+# (The camera runs on its own thread — see Webcam — which is what actually makes
+# in-window clicks reliable on macOS; this just keeps events flowing smoothly.)
+WAITKEY_MS = 20
 
 
 @dataclass
@@ -148,7 +153,7 @@ def snap_in_window(cam: Webcam, window: str = WINDOW,
             raised = True
         if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
             return None
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(WAITKEY_MS) & 0xFF
         if key in (ord("q"), 27):
             return None
         if key == ord(" ") or clicked["v"]:
@@ -287,9 +292,12 @@ class CaptureUI:
             print("No memes found in memes/. Add some first.")
             return
         TESTSET_DIR.mkdir(parents=True, exist_ok=True)
-        self._open_window()
         try:
+            # Open the camera BEFORE creating the window. On macOS the AVFoundation
+            # capture must be initialized first, or it breaks the already-created
+            # HighGUI window's mouse-event delivery (single clicks get dropped).
             with Webcam(self.camera_index) as cam:
+                self._open_window()
                 mode = "live"
                 counting_since: float | None = None
                 captured: Frame | None = None
@@ -312,7 +320,7 @@ class CaptureUI:
                     cv2.imshow(WINDOW, canvas)
                     if self._closed():
                         break
-                    key = cv2.waitKey(1) & 0xFF
+                    key = cv2.waitKey(WAITKEY_MS) & 0xFF
                     click = self._click
                     self._click = None
 
@@ -366,7 +374,7 @@ class CaptureUI:
                     cv2.imshow(WINDOW, canvas)
                     if self._closed():
                         return
-                    key = cv2.waitKey(1) & 0xFF
+                    key = cv2.waitKey(WAITKEY_MS) & 0xFF
                     click = self._click
                     self._click = None
                     if key in (ord("q"), 27):

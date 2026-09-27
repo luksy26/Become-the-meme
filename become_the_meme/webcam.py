@@ -18,6 +18,7 @@ Controls in the preview window:
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,13 @@ class CameraError(RuntimeError):
 class Webcam:
     """A webcam as a context manager yielding BGR frames.
 
+    The ``VideoCapture`` is created, read, and released entirely on a dedicated
+    worker thread; :meth:`read` just hands back the latest captured frame. This
+    is not only for throughput — on macOS an AVFoundation capture created on the
+    main thread breaks HighGUI mouse-event delivery (single clicks get dropped
+    while a window is shown), so keeping capture off the main thread is what makes
+    in-window clicking reliable.
+
     Example
     -------
     >>> with Webcam() as cam:
@@ -56,6 +64,7 @@ class Webcam:
         backend: int = cv2.CAP_ANY,
         warmup_frames: int = 5,
         read_retries: int = 3,
+        open_timeout: float = 10.0,
     ) -> None:
         self.camera_index = camera_index
         self.width = width
@@ -63,40 +72,92 @@ class Webcam:
         self.mirror = mirror
         self.backend = backend
         self.warmup_frames = warmup_frames
-        self.read_retries = read_retries
-        self._cap: cv2.VideoCapture | None = None
+        self.read_retries = read_retries  # kept for API compatibility
+        self.open_timeout = open_timeout
+
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._frame: Frame | None = None
+        self._frame_version = 0
+        self._last_read_version = -1
+        self._resolution: tuple[int, int] = (0, 0)
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._error: str | None = None
 
     # --- lifecycle -----------------------------------------------------------
     def open(self) -> "Webcam":
-        """Open the camera and warm it up. Returns self for chaining."""
-        # Letting OpenCV pick the backend (CAP_ANY) keeps this portable across
-        # macOS (AVFoundation), Windows (MSMF/DSHOW) and Linux (V4L2).
-        cap = cv2.VideoCapture(self.camera_index, self.backend)
-        if not cap.isOpened():
-            raise CameraError(
-                f"Could not open camera index {self.camera_index}. "
-                "Is another app using it, or is camera permission denied?"
-            )
+        """Start the capture thread and block until the first frame (or error)."""
+        if self._thread is not None:
+            return self
+        self._stop.clear()
+        self._ready.clear()
+        self._error = None
+        self._last_read_version = -1
+        self._thread = threading.Thread(
+            target=self._capture_loop, name="webcam-capture", daemon=True)
+        self._thread.start()
 
-        if self.width is not None:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        if self.height is not None:
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-
-        self._cap = cap
-
-        # Some cameras (and the macOS permission handshake) return empty frames
-        # for the first fraction of a second; discard a few to warm up.
-        for _ in range(self.warmup_frames):
-            cap.read()
-
+        if not self._ready.wait(self.open_timeout) and self._error is None:
+            self._error = f"Timed out opening camera index {self.camera_index}."
+        if self._error:
+            self.release()
+            raise CameraError(self._error)
         return self
 
+    def _capture_loop(self) -> None:
+        # Create AND read the capture on this worker thread (see class docstring:
+        # this is what keeps AVFoundation off the main thread on macOS). Letting
+        # OpenCV pick the backend (CAP_ANY) keeps this portable across macOS
+        # (AVFoundation), Windows (MSMF/DSHOW) and Linux (V4L2).
+        cap = cv2.VideoCapture(self.camera_index, self.backend)
+        try:
+            if not cap.isOpened():
+                self._error = (
+                    f"Could not open camera index {self.camera_index}. "
+                    "Is another app using it, or is camera permission denied?"
+                )
+                self._ready.set()  # unblock open()
+                return
+
+            if self.width is not None:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            if self.height is not None:
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            self._resolution = (
+                int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            )
+
+            # Some cameras (and the macOS permission handshake) return empty
+            # frames for the first fraction of a second; discard a few.
+            for _ in range(self.warmup_frames):
+                cap.read()
+
+            while not self._stop.is_set():
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.005)  # ride out a transient grab failure
+                    continue
+                if self.mirror:
+                    frame = cv2.flip(frame, 1)
+                with self._lock:
+                    self._frame = frame
+                    self._frame_version += 1
+                self._ready.set()  # first good frame unblocks open()
+        finally:
+            cap.release()
+
     def release(self) -> None:
-        """Release the camera device."""
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
+        """Stop the capture thread and release the camera device."""
+        self._stop.set()
+        t = self._thread
+        self._thread = None
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=2.0)
+        with self._lock:
+            self._frame = None
+        self._ready.clear()
 
     def __enter__(self) -> "Webcam":
         return self.open()
@@ -112,34 +173,39 @@ class Webcam:
     # --- capture -------------------------------------------------------------
     @property
     def is_open(self) -> bool:
-        return self._cap is not None and self._cap.isOpened()
+        return (self._thread is not None and self._ready.is_set()
+                and not self._stop.is_set())
 
     def read(self) -> Frame:
-        """Grab the current frame as a BGR ndarray.
+        """Return the current frame as a BGR ndarray.
 
-        Retries a few times to ride out transient grab failures, then raises
-        :class:`CameraError` if it still can't get a frame.
+        Blocks briefly for a fresh frame (so callers are paced to roughly the
+        camera's frame rate, as before), then returns a private copy. Raises
+        :class:`CameraError` if the camera isn't open or stops delivering frames.
         """
-        if self._cap is None:
+        if self._thread is None:
             raise CameraError("Camera is not open. Call open() or use 'with Webcam()'.")
 
-        for _ in range(self.read_retries):
-            ok, frame = self._cap.read()
-            if ok and frame is not None:
-                if self.mirror:
-                    frame = cv2.flip(frame, 1)
-                return frame
-
-        raise CameraError("Failed to read a frame from the camera.")
+        deadline = time.time() + 5.0
+        while True:
+            with self._lock:
+                frame = self._frame
+                version = self._frame_version
+            if frame is not None and version != self._last_read_version:
+                self._last_read_version = version
+                return frame.copy()
+            if self._error:
+                raise CameraError(self._error)
+            if time.time() > deadline:
+                if frame is not None:  # deliver a repeat rather than hard-fail
+                    return frame.copy()
+                raise CameraError("Failed to read a frame from the camera.")
+            time.sleep(0.003)
 
     @property
     def actual_resolution(self) -> tuple[int, int]:
         """(width, height) the driver actually gave us (may differ from request)."""
-        if self._cap is None:
-            return (0, 0)
-        w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        return (w, h)
+        return self._resolution
 
 
 def capture_frame(camera_index: int = 0, mirror: bool = True) -> Frame:
