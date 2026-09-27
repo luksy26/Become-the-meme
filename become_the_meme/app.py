@@ -1,11 +1,13 @@
 """Live 'Become the Meme' app: webcam on the left, best-matching meme on the right.
 
-    python -m become_the_meme                    # VLM backend (matches actions)
-    python -m become_the_meme --backend clip     # fast CLIP backend (appearance)
+    python -m become_the_meme                    # concept backend (fast, matches actions)
+    python -m become_the_meme --backend vlm      # slow VLM captions
+    python -m become_the_meme --backend clip     # fast CLIP (appearance only)
     python -m become_the_meme --check            # environment smoke test
 
-Matching runs on a background thread so the webcam stays smooth even though the
-VLM takes ~1-4s per frame. With the CLIP backend it updates many times a second.
+Matching runs on a background thread so the webcam stays smooth. The default
+'concept' backend (SigLIP2 + concept projection) refreshes a few times a second;
+the 'vlm' backend is slower (~1-4s/frame).
 
 Controls:
     q / Esc   quit           s   save the side-by-side view
@@ -152,12 +154,15 @@ class _MatchWorker(threading.Thread):
                 continue
             if matches:
                 best = matches[0]
-                is_vlm = self.backend == "vlm"
+                # `extra` is a text caption for vlm/concept backends, a processed
+                # frame for clip; only strings are shown as the query caption.
+                query_desc = extra if isinstance(extra, str) else ""
+                describe = getattr(self.matcher, "description_of", None)
                 self.result = {
                     "path": str(best.path),
                     "score": best.score,
-                    "query_desc": extra if is_vlm else "",
-                    "meme_desc": self.matcher.description_of(best.path) if is_vlm else "",
+                    "query_desc": query_desc,
+                    "meme_desc": describe(best.path) if describe else "",
                 }
 
     def stop(self) -> None:
@@ -169,14 +174,18 @@ def _build_matcher(backend: str, representation: str):
         from .matcher import MemeMatcher
 
         return MemeMatcher(representation=representation)
-    from .matcher import VLMMatcher
+    if backend == "vlm":
+        from .matcher import VLMMatcher
 
-    return VLMMatcher()
+        return VLMMatcher()
+    from .matcher import ConceptMatcher
+
+    return ConceptMatcher()
 
 
 def run(
     camera_index: int = 0,
-    backend: str = "vlm",
+    backend: str = "concept",
     representation: str = "bbox_crop",
     top_k: int = 3,
 ) -> int:
@@ -258,8 +267,9 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Become the Meme — live matcher.")
-    parser.add_argument("--backend", choices=["vlm", "clip"], default="vlm",
-                        help="vlm = matches actions/expressions; clip = fast appearance")
+    parser.add_argument("--backend", choices=["concept", "vlm", "clip"], default="concept",
+                        help="concept = fast action/expression match (default); "
+                             "vlm = slow captions; clip = fast appearance-only")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--representation", choices=["bbox_crop", "cutout", "raw"],
                         default="bbox_crop", help="(CLIP backend only)")

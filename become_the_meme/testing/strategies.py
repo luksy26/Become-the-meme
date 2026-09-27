@@ -22,12 +22,12 @@ from ..webcam import Frame
 
 # --- model registry (verified available in open_clip 3.3.0) ------------------
 MODELS: dict[str, tuple[str, str]] = {
-    "b32": ("ViT-B-32", "laion2b_s34b_b79k"),          # baseline
-    "l14_dfn": ("ViT-L-14", "dfn2b"),                  # strong
-    "siglip2_b": ("ViT-B-16-SigLIP2", "webli"),        # different family
+    "b32": ("ViT-B-32", "laion2b_s34b_b79k"),               # baseline
+    "l14_dfn": ("ViT-L-14-quickgelu", "dfn2b"),             # strong (quickgelu arch matches dfn2b)
+    "siglip2_b": ("ViT-B-16-SigLIP2", "webli"),             # different family
     # extras (available if we want to widen the sweep)
     "l14_laion": ("ViT-L-14", "laion2b_s32b_b82k"),
-    "b16_dfn": ("ViT-B-16", "dfn2b"),
+    "b16_dfn": ("ViT-B-16-quickgelu", "dfn2b"),
 }
 
 TEMPLATES = ["a photo of {c}", "an image of {c}", "{c}", "a meme of {c}"]
@@ -247,16 +247,17 @@ class MatchStrategy:
             self._V = _l2(self._V - self._muv)
         return self
 
-    def _query_vector(self, frame: Frame) -> np.ndarray:
-        q = embed_with_rep(self._backend.embedder, frame, self.representation, self._segmenter)
+    def _query_vector_from_emb(self, q_img: np.ndarray) -> np.ndarray:
+        v = q_img
         if self.method == "concept":
-            q = _l2(fingerprint(q[None], self._T, self.fingerprint_mode)[0] - self._cmean)
+            v = _l2(fingerprint(q_img[None], self._T, self.fingerprint_mode)[0] - self._cmean)
         if self.normalization == "meancenter":
-            q = _l2(q - self._muv)
-        return q
+            v = _l2(v - self._muv)
+        return v
 
-    def rank(self, frame: Frame, top_k: int | None = None) -> list[Match]:
-        v = self._query_vector(frame)
+    def rank_from_emb(self, q_img: np.ndarray, top_k: int | None = None) -> list[Match]:
+        """Rank memes from an already-computed query image embedding (D,)."""
+        v = self._query_vector_from_emb(q_img)
         s = self._V @ v
         if self.normalization == "hubness":
             s = s - self.beta * self._h
@@ -266,6 +267,10 @@ class MatchStrategy:
         if top_k is not None:
             order = order[:top_k]
         return [Match(path=config.MEMES_DIR / self._paths[i], score=float(s[i])) for i in order]
+
+    def rank(self, frame: Frame, top_k: int | None = None) -> list[Match]:
+        q_img = embed_with_rep(self._backend.embedder, frame, self.representation, self._segmenter)
+        return self.rank_from_emb(q_img, top_k)
 
 
 # --- presets -----------------------------------------------------------------
@@ -284,6 +289,8 @@ def default_strategies() -> list[MatchStrategy]:
         S("l14_upper_concept_z", "l14_dfn", "upper_body_crop", "concept", "zscore"),
         S("siglip2_bbox_concept_hub", "siglip2_b", "bbox_crop", "concept", "hubness"),
         S("l14_bbox_concept_hub", "l14_dfn", "bbox_crop", "concept", "hubness"),
+        # current best (found via the sweep): the one to tune against.
+        S("siglip2_upper_concept_z", "siglip2_b", "upper_body_crop", "concept", "zscore"),
     ]
 
 

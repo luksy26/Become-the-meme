@@ -107,6 +107,20 @@ def _countdown_and_grab(cam: Webcam, seconds: int = 3) -> Frame:
             return frame
 
 
+def _show_captured(frame: Frame) -> None:
+    """Freeze-display the just-captured frame so the user can see what was taken."""
+    disp = frame.copy()
+    overlay = disp.copy()
+    cv2.rectangle(overlay, (0, 0), (disp.shape[1], 40), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, disp, 0.4, 0, disp)
+    cv2.putText(disp, "CAPTURED  (keep it? answer in the terminal)", (10, 27),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    # Paint a few times so macOS actually renders the static frame.
+    for _ in range(5):
+        cv2.imshow(WINDOW, disp)
+        cv2.waitKey(30)
+
+
 def capture(num: int, camera_index: int) -> list[str]:
     """Capture `num` snapshots; returns the list of saved filenames."""
     TESTSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,9 +133,16 @@ def capture(num: int, camera_index: int) -> list[str]:
             cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
             for i in range(num):
                 idx = start_idx + i
-                input(f"\nPose {i + 1}/{num} — get ready, then press Enter "
-                      "(Ctrl-C to stop)... ")
-                frame = _countdown_and_grab(cam)
+                while True:
+                    input(f"\nPose {i + 1}/{num} — get ready, then press Enter "
+                          "(Ctrl-C to stop)... ")
+                    frame = _countdown_and_grab(cam)
+                    _show_captured(frame)
+                    if input("  Keep this shot? [Enter=keep / r=retake]: "
+                             ).strip().lower() == "r":
+                        print("  retaking...")
+                        continue
+                    break
                 name = f"img_{idx:03d}.png"
                 cv2.imwrite(str(TESTSET_DIR / name), frame)
                 saved.append(name)

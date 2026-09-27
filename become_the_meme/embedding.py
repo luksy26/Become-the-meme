@@ -43,8 +43,14 @@ class CLIPEmbedder:
         )
         self.model = model.to(self.device).eval()
         self.preprocess = preprocess
-        # Embedding dimensionality (e.g. 512 for ViT-B-32).
-        self.dim = self.model.visual.output_dim
+        # Embedding dimensionality. `visual.output_dim` is absent on some
+        # backbones (e.g. timm-based SigLIP2), so fall back to a dummy forward.
+        dim = getattr(getattr(self.model, "visual", None), "output_dim", None)
+        if dim is None:
+            with torch.no_grad():
+                dummy = self.preprocess(Image.new("RGB", (224, 224))).unsqueeze(0).to(self.device)
+                dim = int(self.model.encode_image(dummy).shape[-1])
+        self.dim = int(dim)
 
     @property
     def model_id(self) -> str:

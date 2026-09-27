@@ -15,6 +15,7 @@ The query *representation* is switchable so it's easy to compare live:
 
 from __future__ import annotations
 
+from . import config
 from .embedding import CLIPEmbedder
 from .meme_index import Match, MemeIndex
 from .segmentation import PersonSegmenter
@@ -110,3 +111,61 @@ class VLMMatcher:
 
     def description_of(self, path) -> str:
         return self.index.description_of(path)
+
+
+class ConceptMatcher:
+    """Fast CLIP-concept matcher — the winning strategy from the harness.
+
+    SigLIP2 + upper-body crop + concept projection + z-score. Matches on *what
+    you're doing* (via a generic action/expression concept vocabulary) rather
+    than who you look like, at ~130ms/frame. The on-screen captions show the top
+    concepts fired by you and by the matched meme.
+    """
+
+    def __init__(self, strategy_name: str = "siglip2_upper_concept_z",
+                 segmenter: PersonSegmenter | None = None) -> None:
+        import numpy as np
+
+        from .testing.strategies import (
+            TEMPLATES,
+            embed_with_rep,
+            load_concepts,
+            prepare_strategies,
+            strategies_by_name,
+        )
+
+        self._np = np
+        self._embed_with_rep = embed_with_rep
+        self.segmenter = segmenter or PersonSegmenter()
+        self.strategy = strategies_by_name([strategy_name])[0]
+        prepare_strategies([self.strategy], self.segmenter)
+        self.backend = self.strategy._backend
+        self.concepts = load_concepts()
+        self._T = self.backend.concept_matrix(self.concepts, TEMPLATES)
+
+        # Precompute each meme's top concepts for the on-screen caption.
+        paths, meme_embs = self.backend.meme_base_embeddings("raw")
+        self._meme_concepts = {
+            str(config.MEMES_DIR / rel): self._top_concepts(meme_embs[i])
+            for i, rel in enumerate(paths)
+        }
+
+    @property
+    def num_memes(self) -> int:
+        return len(self.strategy._paths)
+
+    def _top_concepts(self, vec, k: int = 3) -> str:
+        scores = vec @ self._T.T
+        idx = self._np.argsort(-scores)[:k]
+        return ", ".join(self.concepts[i] for i in idx)
+
+    def match_frame(self, frame: Frame, top_k: int = 1) -> tuple[list[Match], str]:
+        """Return (matches, top-concepts-you-fired) for a frame."""
+        q_img = self._embed_with_rep(
+            self.backend.embedder, frame, self.strategy.representation, self.segmenter
+        )
+        matches = self.strategy.rank_from_emb(q_img, top_k=top_k)
+        return matches, self._top_concepts(q_img)
+
+    def description_of(self, path) -> str:
+        return self._meme_concepts.get(str(path), "")
