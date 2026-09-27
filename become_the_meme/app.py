@@ -10,7 +10,8 @@ Matching runs on a background thread so the webcam stays smooth. The default
 the 'vlm' backend is slower (~1-4s/frame).
 
 Controls:
-    q / Esc   quit           s   save the side-by-side view
+    q / Esc   quit                      s   save the side-by-side view
+    f         toggle fullscreen         d   toggle text captions (off by default)
     r         (CLIP) cycle representation      p   (CLIP) toggle processed view
 """
 
@@ -26,9 +27,15 @@ import numpy as np
 
 from .webcam import CameraError, Frame, Webcam, save_snapshot
 
-PANEL_HEIGHT = 540
-HEADER_HEIGHT = 40
+PANEL_HEIGHT = 720
+PANEL_WIDTH = 1280          # fixed panel size so the window never resizes
+HEADER_HEIGHT = 44
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# Display stability so the matched meme doesn't strobe (but stays responsive).
+SUBMIT_INTERVAL = 0.25      # seconds between frames handed to the matcher
+SWITCH_STREAK = 2           # consecutive agreeing matches needed to switch memes
+MIN_HOLD = 0.5             # min seconds a meme stays on screen before it can change
 
 
 class MemeImageCache:
@@ -47,6 +54,36 @@ def _fit_to_height(img: Frame, height: int) -> Frame:
     h, w = img.shape[:2]
     new_w = max(1, int(round(w * height / h)))
     return cv2.resize(img, (new_w, height), interpolation=cv2.INTER_AREA)
+
+
+def _screen_size() -> tuple[int, int]:
+    """Best-effort screen resolution (Tkinter), with a safe fallback."""
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.withdraw()
+        w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.destroy()
+        if w >= 640 and h >= 480:
+            return int(w), int(h)
+    except Exception:  # noqa: BLE001 - Tk may be unavailable; fall back
+        pass
+    return 1728, 1117
+
+
+def _fit_into_box(img: Frame, box_w: int, box_h: int) -> Frame:
+    """Resize preserving aspect and letterbox into a fixed box (constant output size)."""
+    box_w, box_h = max(1, box_w), max(1, box_h)
+    h, w = img.shape[:2]
+    scale = min(box_w / w, box_h / h)
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+    resized = cv2.resize(img, (nw, nh), interpolation=interp)
+    box = np.full((box_h, box_w, 3), 20, dtype=np.uint8)
+    y0, x0 = (box_h - nh) // 2, (box_w - nw) // 2
+    box[y0:y0 + nh, x0:x0 + nw] = resized
+    return box
 
 
 def _text(img: Frame, s: str, org: tuple[int, int], scale: float = 0.6) -> None:
@@ -100,22 +137,27 @@ def _compose(
     info: str,
     query_desc: str = "",
     meme_desc: str = "",
+    panel_w: int = PANEL_WIDTH,
+    panel_h: int = PANEL_HEIGHT,
+    header_h: int = HEADER_HEIGHT,
+    header_scale: float = 0.6,
 ) -> Frame:
-    left_panel = _fit_to_height(left, PANEL_HEIGHT)
+    left_panel = _fit_into_box(left, panel_w, panel_h)
     if meme is not None:
-        right_panel = _fit_to_height(meme, PANEL_HEIGHT)
+        right_panel = _fit_into_box(meme, panel_w, panel_h)
     else:
-        right_panel = np.full((PANEL_HEIGHT, left_panel.shape[1], 3), 40, dtype=np.uint8)
-        _text(right_panel, "describing...", (20, PANEL_HEIGHT // 2), 0.7)
+        right_panel = np.full((panel_h, panel_w, 3), 40, dtype=np.uint8)
+        _text(right_panel, "matching...", (20, panel_h // 2), 0.7)
 
     _draw_caption(left_panel, query_desc)
     _draw_caption(right_panel, meme_desc)
 
     canvas = np.hstack([left_panel, right_panel])
-    header = np.full((HEADER_HEIGHT, canvas.shape[1], 3), 25, dtype=np.uint8)
-    _text(header, f"YOU  |  {info}", (12, 27))
+    header = np.full((header_h, canvas.shape[1], 3), 25, dtype=np.uint8)
+    hy = int(header_h * 0.62)
+    _text(header, f"YOU  |  {info}", (12, hy), header_scale)
     label = f"{meme_name}  ({score:.2f})" if meme_name else "..."
-    _text(header, label, (left_panel.shape[1] + 12, 27))
+    _text(header, label, (panel_w + 12, hy), header_scale)
     return np.vstack([header, canvas])
 
 
@@ -131,6 +173,7 @@ class _MatchWorker(threading.Thread):
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self.result: dict | None = None
+        self.version = 0  # bumped on each new result so the UI can detect changes
 
     def submit(self, frame: Frame) -> None:
         with self._lock:
@@ -164,6 +207,7 @@ class _MatchWorker(threading.Thread):
                     "query_desc": query_desc,
                     "meme_desc": describe(best.path) if describe else "",
                 }
+                self.version += 1
 
     def stop(self) -> None:
         self._stop.set()
@@ -188,6 +232,8 @@ def run(
     backend: str = "concept",
     representation: str = "bbox_crop",
     top_k: int = 3,
+    show_captions: bool = False,
+    fullscreen: bool = True,
 ) -> int:
     print(f"Loading {backend.upper()} backend and meme index "
           "(first run downloads weights / describes memes)...")
@@ -204,36 +250,74 @@ def run(
     meme_cache = MemeImageCache()
     fps = 0.0
     prev = time.time()
+    last_submit = 0.0
+    last_version = -1
+    shown: dict | None = None     # the match currently displayed (stabilized)
+    shown_since = 0.0
+    cand: str | None = None       # challenger meme + how many results in a row
+    streak = 0
     show_processed = False
     window = "Become the Meme"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    if fullscreen:
+        cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    screen_size = _screen_size() if fullscreen else None
     raised = False
+
+    def panel_dims() -> tuple[int, int, int, float]:
+        """(panel_w, panel_h, header_h, header_scale) for the current mode."""
+        if fullscreen and screen_size:
+            sw, sh = screen_size
+            hh = max(HEADER_HEIGHT, min(sh // 16, sh - 120))
+            ph, pw = max(1, sh - hh), max(1, sw // 2)
+            return pw, ph, hh, min(1.3, max(0.6, hh / 60))
+        return PANEL_WIDTH, PANEL_HEIGHT, HEADER_HEIGHT, 0.6
 
     try:
         with Webcam(camera_index) as cam:
             while True:
                 frame = cam.read()
-                worker.submit(frame)
-
                 now = time.time()
                 dt = now - prev
                 prev = now
                 if dt > 0:
                     fps = 0.9 * fps + 0.1 * (1.0 / dt) if fps else 1.0 / dt
 
+                # Throttle how often the (heavier) matcher runs.
+                if now - last_submit >= SUBMIT_INTERVAL:
+                    worker.submit(frame)
+                    last_submit = now
+
+                # Fold in a new result with hysteresis so the shown meme doesn't
+                # strobe: a challenger must win SWITCH_STREAK times in a row and the
+                # current pick must have been up at least MIN_HOLD seconds.
                 res = worker.result
-                meme_img = meme_cache.get(res["path"]) if res else None
-                name = Path(res["path"]).name if res else ""
-                score = res["score"] if res else 0.0
-                q_desc = res["query_desc"] if res else ""
-                m_desc = res["meme_desc"] if res else ""
+                if res is not None and worker.version != last_version:
+                    last_version = worker.version
+                    top = res["path"]
+                    if shown is None:
+                        shown, shown_since = res, now
+                    elif top == shown["path"]:
+                        shown, cand, streak = res, None, 0  # refresh score/desc
+                    else:
+                        cand, streak = (top, streak + 1) if top == cand else (top, 1)
+                        if streak >= SWITCH_STREAK and (now - shown_since) >= MIN_HOLD:
+                            shown, shown_since, cand, streak = res, now, None, 0
+
+                meme_img = meme_cache.get(shown["path"]) if shown else None
+                name = Path(shown["path"]).name if shown else ""
+                score = shown["score"] if shown else 0.0
+                q_desc = shown["query_desc"] if (shown and show_captions) else ""
+                m_desc = shown["meme_desc"] if (shown and show_captions) else ""
 
                 info = f"{fps:4.1f}fps  {backend}"
                 if backend == "clip":
                     info += f"  rep={matcher.representation}"
                 left = matcher.preprocess(frame) if (show_processed and backend == "clip") else frame
 
-                canvas = _compose(left, meme_img, name, score, info, q_desc, m_desc)
+                pw, ph, hh, hs = panel_dims()
+                canvas = _compose(left, meme_img, name, score, info, q_desc, m_desc,
+                                  pw, ph, hh, hs)
                 cv2.imshow(window, canvas)
                 if not raised:
                     cv2.setWindowProperty(window, cv2.WND_PROP_TOPMOST, 1)
@@ -246,6 +330,14 @@ def run(
                     break
                 if key == ord("s"):
                     print(f"Saved -> {save_snapshot(canvas)}")
+                if key == ord("d"):
+                    show_captions = not show_captions
+                if key == ord("f"):
+                    fullscreen = not fullscreen
+                    cv2.setWindowProperty(
+                        window, cv2.WND_PROP_FULLSCREEN,
+                        cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+                    screen_size = _screen_size() if fullscreen else None
                 if key == ord("r") and backend == "clip":
                     order = ["bbox_crop", "cutout", "raw"]
                     nxt = order[(order.index(matcher.representation) + 1) % len(order)]
@@ -274,9 +366,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--representation", choices=["bbox_crop", "cutout", "raw"],
                         default="bbox_crop", help="(CLIP backend only)")
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--captions", action="store_true",
+                        help="show the text concept captions (off by default; toggle with 'd')")
+    parser.add_argument("--windowed", action="store_true",
+                        help="start windowed instead of fullscreen (toggle with 'f')")
     args = parser.parse_args(argv)
     return run(camera_index=args.camera, backend=args.backend,
-               representation=args.representation, top_k=args.top_k)
+               representation=args.representation, top_k=args.top_k,
+               show_captions=args.captions, fullscreen=not args.windowed)
 
 
 if __name__ == "__main__":
