@@ -80,3 +80,27 @@ class CLIPEmbedder:
     def embed_image(self, image: ImageLike) -> np.ndarray:
         """Embed a single image -> (dim,) float32, L2-normalized."""
         return self.embed_images([image])[0]
+
+    def embed_text(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
+        """Embed text -> (N, dim) float32, each row L2-normalized.
+
+        Same vector space as :meth:`embed_images`, so image and text embeddings
+        are directly comparable (used for concept projection). The tokenizer is
+        created lazily and matches the model family (e.g. SigLIP2 has its own).
+        """
+        if not texts:
+            return np.zeros((0, self.dim), dtype=np.float32)
+
+        import open_clip
+
+        torch = self._torch
+        if getattr(self, "_tokenizer", None) is None:
+            self._tokenizer = open_clip.get_tokenizer(self.model_name)
+        chunks: list[np.ndarray] = []
+        with torch.no_grad():
+            for i in range(0, len(texts), batch_size):
+                tokens = self._tokenizer(texts[i : i + batch_size]).to(self.device)
+                feats = self.model.encode_text(tokens)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+                chunks.append(feats.cpu().numpy().astype(np.float32))
+        return np.concatenate(chunks, axis=0)

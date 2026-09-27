@@ -1,0 +1,69 @@
+# Generic action / expression / pose vocabulary for concept-projection matching.
+# One concept per line; blank lines and '#' comments are ignored.
+# Written to read naturally after a template, e.g. "a photo of {concept}".
+# This is a GENERIC vocabulary, not per-meme annotation. Edit freely and re-run.
+
+# --- facial expression ---
+a person smiling
+a person grinning widely
+a person laughing hard
+a person crying
+a person crying with laughter
+a person with a surprised face
+a person with a shocked face
+a person with an angry face
+a person frowning
+a person with a smug smirking face
+a person with a confident face
+a person with a neutral expression
+a person screaming
+a person winking
+a person with a disgusted face
+a person with a stern serious face
+a person looking bored
+a person looking excited
+
+# --- head and gaze ---
+a person looking to the side
+a person looking up
+a person with their head tilted
+a person staring straight at the camera
+
+# --- hand and arm gestures ---
+a person pointing at the camera
+a person giving a thumbs up
+a person raising both arms in the air
+a person with arms crossed
+a person with a hand on the chin thinking
+a person doing a facepalm
+a person waving
+a person raising a fist
+a person making a peace sign
+a person flexing their biceps
+a person with hands on hips
+a person shrugging
+a person clapping
+a person with praying hands
+a person with a finger over their lips
+
+# --- body pose ---
+a person standing confidently
+a person leaning forward
+a person with arms spread wide
+a person crouching
+a person running
+a person sitting down
+a muscular bodybuilder pose
+a person dabbing
+a person lying down
+
+# --- affect / vibe ---
+a cool confident alpha pose
+a person looking relaxed and calm
+
+# --- non-person catch-alls ---
+a dog
+an animal
+a cartoon character
+a soccer player celebrating a goal
+a person holding a trophy
