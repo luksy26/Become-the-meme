@@ -21,3 +21,6 @@ cache/*
 # Editors
 .vscode/
 .idea/
+
+# Memes directory (keep private)
+memes/*
