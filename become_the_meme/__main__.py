@@ -1,8 +1,7 @@
-"""Environment smoke test: `python -m become_the_meme`.
+"""Package entry point.
 
-Confirms the scaffold is wired up and every dependency imports cleanly, then
-reports the compute device that later steps will use. This is a placeholder
-entry point — the live webcam/matching app replaces it in a later step.
+    python -m become_the_meme          # launch the live meme matcher
+    python -m become_the_meme --check  # environment smoke test
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ _DEPENDENCIES = [
 
 
 def _check_dependencies() -> bool:
-    """Import each dependency; print status. Return True if all succeeded."""
     all_ok = True
     for module_name, label, version_attr in _DEPENDENCIES:
         try:
@@ -38,7 +36,8 @@ def _check_dependencies() -> bool:
     return all_ok
 
 
-def main() -> int:
+def check() -> int:
+    """Environment smoke test: verify deps import and report the compute device."""
     print(f"Become the Meme v{__version__} — environment check")
     print(f"  Python     {platform.python_version()} ({sys.executable})")
     print(f"  Platform   {platform.platform()}")
@@ -54,15 +53,20 @@ def main() -> int:
 
     print("Dependencies:")
     deps_ok = _check_dependencies()
-
     if deps_ok:
-        # Safe to query the device now that torch imported successfully.
         print(f"Compute device: {config.get_device()}")
         print("\nEnvironment looks good. ✅")
         return 0
-
     print("\nSome dependencies failed to import. Run: pip install -r requirements.txt")
     return 1
+
+
+def main() -> int:
+    if "--check" in sys.argv[1:]:
+        return check()
+    from .app import main as app_main
+
+    return app_main([a for a in sys.argv[1:] if a != "--check"])
 
 
 if __name__ == "__main__":

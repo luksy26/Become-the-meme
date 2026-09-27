@@ -1,8 +1,8 @@
 # Become the Meme
 
 Point your webcam at yourself, and the tool finds the meme in your `memes/`
-folder that best matches your current expression or pose — in real time, fully
-local, no cloud, no training data, no manual annotation.
+folder that you most look/vibe like — in real time, fully local, no cloud, no
+training data, no manual annotation.
 
 ## How it works (the short version)
 
@@ -14,6 +14,12 @@ local, no cloud, no training data, no manual annotation.
 5. **Show** you next to the winning meme.
 
 No labels or training required — matching is zero-shot via CLIP embeddings.
+
+**A note on what it matches:** CLIP keys on overall appearance/expression/vibe,
+not precise body actions. It's great at "which meme do you look like"; matching a
+specific pose (e.g. hands raised) to a specific action meme is not reliable and
+was deliberately deferred (off-the-shelf pose estimation proved too flaky on a
+mixed, low-res meme corpus).
 
 ## Project layout
 
@@ -37,11 +43,28 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Run it
+
+```bash
+source .venv/bin/activate
+python -m become_the_meme            # live: you on the left, best meme on the right
+```
+
+Controls: **q** quit · **s** save the side-by-side view · **r** cycle query
+representation (`bbox_crop` → `cutout` → `raw`) · **p** toggle the processed view.
+
+The meme index builds/updates automatically on start, so just drop new images
+into `memes/` and relaunch. To (re)build it manually:
+
+```bash
+python -m become_the_meme.meme_index --build      # or --rebuild to force
+```
+
 ## Verify the environment
 
 ```bash
-python -m become_the_meme
+python -m become_the_meme --check
 ```
 
 This prints the detected compute device and confirms every dependency imports
-correctly. Build steps beyond the environment scaffold are added incrementally.
+correctly.
